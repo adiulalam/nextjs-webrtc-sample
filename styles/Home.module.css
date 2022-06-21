@@ -74,34 +74,21 @@
   max-width: 800px;
 }
 
-.card {
-  margin: 1rem;
-  padding: 1.5rem;
-  text-align: left;
-  color: inherit;
-  text-decoration: none;
-  border: 1px solid #eaeaea;
-  border-radius: 10px;
-  transition: color 0.15s ease, border-color 0.15s ease;
-  max-width: 300px;
+.join-room {
+  border-radius: 15px;
+  border: none;
+  padding: 5px 15px;
+  color: #fff;
+  background-color: #1694ff;
 }
 
-.card:hover,
-.card:focus,
-.card:active {
-  color: #0070f3;
-  border-color: #0070f3;
-}
-
-.card h2 {
-  margin: 0 0 1rem 0;
-  font-size: 1.5rem;
-}
-
-.card p {
-  margin: 0;
-  font-size: 1.25rem;
-  line-height: 1.5;
+.room-name {
+  margin-bottom: 2rem;
+  padding: 5px 10px;
+  border-radius: 5px;
+  border: 1px solid lightgray;
+  width: 300px;
+  text-align: center;
 }
 
 .logo {

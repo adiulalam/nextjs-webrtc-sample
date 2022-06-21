@@ -1,6 +1,5 @@
 import Head from 'next/head'
 import Image from 'next/image'
-import { v4 as uuid } from 'uuid'
 import { useRouter } from 'next/router'
 import { useState } from 'react'
 import styles from '../styles/Home.module.css'
@@ -10,7 +9,7 @@ export default function Home() {
   const [room, setRoom] = useState('')
 
   const create = () => {
-    router.push(`/${room || uuid()}`)
+    router.push(`/room/${room || Math.random().toString(36).slice(2)}`)
   }
 
   return (
@@ -23,8 +22,8 @@ export default function Home() {
 
       <main className={styles.main}>
        <h1>Lets join a room!</h1>
-       <input onChange={(e) => setRoom(e.target.value)} value={room} />
-       <button onClick={create} type="button">Join Room</button>
+       <input onChange={(e) => setRoom(e.target.value)} value={room} className={styles['room-name']} />
+       <button onClick={create} type="button" className={styles['join-room']}>Join Room</button>
       </main>
 
       <footer className={styles.footer}>

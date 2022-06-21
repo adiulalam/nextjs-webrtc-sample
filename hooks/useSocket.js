@@ -1,15 +1,15 @@
 import { useEffect, useRef } from "react";
 
 const useSocket = () => {
-  const socketCalled = useRef(false)
+  const socketCreated = useRef(false)
   useEffect(() =>{
-    if (!socketCalled.current) {
+    if (!socketCreated.current) {
       const socketInitializer = async () => {
         await fetch ('/api/socket')
       }
       try {
         socketInitializer()
-        socketCalled.current = true
+        socketCreated.current = true
       } catch (error) {
         console.log(error)
       }
