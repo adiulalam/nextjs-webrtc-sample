@@ -1,60 +1,153 @@
 import { useRouter } from 'next/router';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import useSocket from '../../hooks/useSocket';
 
+const ICE_SERVERS = {
+  iceServers: [
+    {
+      urls: 'stun:openrelay.metered.ca:80',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ],
+};
+
 const Room = () => {
   useSocket();
+  const [micActive, setMicActive] = useState(true);
+  const [cameraActive, setCameraActive] = useState(true);
+
   const router = useRouter();
   const userVideo = useRef();
   const partnerVideo = useRef();
-  const rtcConnection = useRef();
+  const rtcConnection = useRef(null);
   const socketRef = useRef();
-  const otherUser = useRef();
   const userStream = useRef();
+  const host = useRef(false);
 
-  const { id } = router.query;
-  const CONSTRAINTS = {
-    video: true,
-    audio: true,
-  };
+  const { id: roomName } = router.query;
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia(CONSTRAINTS).then((stream) => {
-      userVideo.current.srcObject = stream;
-      userStream.current = stream;
+    socketRef.current = io();
+    // First we join a room
+    socketRef.current.emit('join', roomName);
 
-      socketRef.current = io.connect('/');
-      socketRef.current.emit('join-room', id);
-      socketRef.current.on('other-users', (userId) => {
-        callUser(userId);
-        otherUser.current = userId;
-      });
+    socketRef.current.on('joined', handleJoiningRoom);
+    // If the room didn't exist, the server would emit the room was 'created'
+    socketRef.current.on('created', handRoomCreated);
+    // Whenever the next person joins, the server emits 'ready'
+    socketRef.current.on('ready', initiateCall);
 
-      socketRef.current.on('user-joined', (userId) => {
-        otherUser.current = userId;
-      });
+    // Emitted when a peer leaves the room
+    socketRef.current.on('leave', () => {
+      // This person is now the creator because they are the only person in the room.
+      host.current = true;
+      if (partnerVideo.current.srcObject) {
+        partnerVideo.current.srcObject
+          .getTracks()
+          .forEach((track) => track.stop()); // Stops receiving all track of Peer.
+      }
 
-      // Event called when a remote user initiating the connection and
-      socketRef.current.on('offer', handleReceivedOffer);
-
-      socketRef.current.on('answer', handleAnswer);
-
-      socketRef.current.on('ice-candidate', handlerNewIceCandidateMsg);
+      // Safely closes the existing connection established with the peer who left.
+      if (rtcConnection.current) {
+        rtcConnection.current.ontrack = null;
+        rtcConnection.current.onicecandidate = null;
+        rtcConnection.current.close();
+        rtcConnection.current = null;
+      }
     });
-  }, [id]);
 
-  function callUser(userId) {
-    try {
-      rtcConnection.current = createPeerConnection(userId);
-      // We will take the tracks from each of the streams and push it to the addTrack method that exists on the
-      // WebRTC Peer Object. We're taking our stream and attaching it to our peer.
-      // userStream.current
-      //   .getTracks()
-      //   .forEach((track) => rtcConnection.current.addTrack(track, userStream.current));
-    } catch (e) {
-      console.log(e);
+    // If the room is full, we show an alert
+    socketRef.current.on('full', () => {
+      window.location.href = '/';
+    });
+
+    // Event called when a remote user initiating the connection and
+    socketRef.current.on('offer', handleReceivedOffer);
+    socketRef.current.on('answer', handleAnswer);
+    socketRef.current.on('ice-candidate', handlerNewIceCandidateMsg);
+
+    // clear up after
+    return () => socketRef.current.disconnect();
+  }, [roomName]);
+
+  const handleJoiningRoom = () => {
+    navigator.mediaDevices
+      .getUserMedia({
+        audio: true,
+        video: { width: 500, height: 500 },
+      })
+      .then((stream) => {
+        /* use the stream */
+        userStream.current = stream;
+        userVideo.current.srcObject = stream;
+        userVideo.current.onloadedmetadata = () => {
+          userVideo.current.play();
+        };
+        socketRef.current.emit('ready', roomName);
+      })
+      .catch((err) => {
+        /* handle the error */
+        console.log('error', err);
+      });
+  };
+
+  const handRoomCreated = () => {
+    host.current = true;
+    navigator.mediaDevices
+      .getUserMedia({
+        audio: true,
+        video: { width: 500, height: 500 },
+      })
+      .then((stream) => {
+        /* use the stream */
+        userStream.current = stream;
+        userVideo.current.srcObject = stream;
+        userVideo.current.onloadedmetadata = () => {
+          userVideo.current.play();
+        };
+      })
+      .catch((err) => {
+        /* handle the error */
+        console.log(err);
+      });
+  };
+
+  const initiateCall = () => {
+    if (host.current) {
+      rtcConnection.current = createPeerConnection();
+      rtcConnection.current.addTrack(
+        userStream.current.getTracks()[0],
+        userStream.current,
+      );
+      rtcConnection.current.addTrack(
+        userStream.current.getTracks()[1],
+        userStream.current,
+      );
+      rtcConnection.current
+        .createOffer()
+        .then((offer) => {
+          rtcConnection.current.setLocalDescription(offer);
+          socketRef.current.emit('offer', offer, roomName);
+        })
+        .catch((error) => {
+          console.log(error);
+        });
     }
-  }
+  };
 
   /**
    * Takes a userid which is also the socketid and returns a WebRTC Peer
@@ -63,121 +156,120 @@ const Room = () => {
    * @returns {RTCPeerConnection} peer
    */
 
-  function createPeerConnection(userId) {
-    const connection = new RTCPeerConnection({
-      iceServers: [
-        {
-          urls: 'stun:openrelay.metered.ca:80',
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
-      ],
-    });
+  const createPeerConnection = () => {
+    // We create a RTC Peer Connection
+    const connection = new RTCPeerConnection(ICE_SERVERS);
 
+    // We implement our onicecandidate method for when we received a ICE candidate from the STUN server
     connection.onicecandidate = handleICECandidateEvent;
+
+    // We implement our onTrack method for when we receive tracks
     connection.ontrack = handleTrackEvent;
-    connection.onnegotiationneeded = () =>
-      handleNegotiationsNeededEvent(userId);
     return connection;
-  }
+  };
 
-  function handleNegotiationsNeededEvent(userId) {
-    rtcConnection.current
-      .createOffer() // Resolves with a promise that returns an offer object
-      .then((offer) => rtcConnection.current.setLocalDescription(offer)) // So whenever an offer is create (or 'Answer' that the user is going to reply with), we set it as our local description but the other user will set it as their remote description
-      .then(() => {
-        const payload = {
-          target: userId,
-          caller: socketRef.current.id,
-          sdp: rtcConnection.current.localDescription, // This is the offer object that is being received
-        };
-        socketRef.current.emit('offer', payload);
-      })
-      .catch((e) => console.log(e));
-  }
+  const handleReceivedOffer = (offer) => {
+    if (!host.current) {
+      rtcConnection.current = createPeerConnection();
+      rtcConnection.current.addTrack(
+        userStream.current.getTracks()[0],
+        userStream.current,
+      );
+      rtcConnection.current.addTrack(
+        userStream.current.getTracks()[1],
+        userStream.current,
+      );
+      rtcConnection.current.setRemoteDescription(offer);
 
-  function handleReceivedOffer(incoming) {
-    rtcConnection.current = createPeerConnection(); // This function is called when we aren't the initiator, so we don't need to pass the userID
-    const desc = new RTCSessionDescription(incoming.sdp);
-    rtcConnection.current
-      .setRemoteDescription(desc)
-      .then(() =>
-        userStream.current
-          .getTracks()
-          .forEach((track) =>
-            rtcConnection.current.addTrack(track, userStream.current),
-          ),
-      )
-      .then(() => rtcConnection.current.createAnswer()) // resolves with the answer object and essentially SDP data
-      .then((answer) => rtcConnection.current.setLocalDescription(answer))
-      .then(() => {
-        const payload = {
-          target: incoming.caller,
-          caller: socketRef.current.id,
-          sdp: rtcConnection.current.localDescription,
-        };
-        socketRef.current.emit('answer', payload);
-      });
-  }
-
-  function handleAnswer(message) {
-    const desc = new RTCSessionDescription(message.sdp);
-    rtcConnection.current
-      .setRemoteDescription(desc)
-      .catch((err) => console.log(err));
-  }
-
-  function handleICECandidateEvent(event) {
-    if (event.candidate) {
-      const payload = {
-        target: otherUser.current,
-        candidate: event.candidate,
-      };
-      socketRef.current.emit('ice-candidate', payload);
+      rtcConnection.current
+        .createAnswer()
+        .then((answer) => {
+          rtcConnection.current.setLocalDescription(answer);
+          socketRef.current.emit('answer', answer, roomName);
+        })
+        .catch((error) => {
+          console.log(error);
+        });
     }
-  }
+  };
 
-  function handlerNewIceCandidateMsg(incoming) {
+  const handleAnswer = (answer) => {
+    rtcConnection.current
+      .setRemoteDescription(answer)
+      .catch((err) => console.log(err));
+  };
+
+  const handleICECandidateEvent = (event) => {
+    if (event.candidate) {
+      socketRef.current.emit('ice-candidate', event.candidate, roomName);
+    }
+  };
+
+  const handlerNewIceCandidateMsg = (incoming) => {
+    // We cast the incoming candidate to RTCIceCandidate
     const candidate = new RTCIceCandidate(incoming);
     rtcConnection.current
       .addIceCandidate(candidate)
       .catch((e) => console.log(e));
-  }
+  };
 
-  function handleTrackEvent(event) {
+  const handleTrackEvent = (event) => {
     // eslint-disable-next-line prefer-destructuring
     partnerVideo.current.srcObject = event.streams[0];
-  }
+  };
 
-  function shareMedia() {
-    if (userStream.current && rtcConnection.current) {
-      userStream.current
-        .getTracks()
-        .forEach((track) =>
-          rtcConnection.current.addTrack(track, userStream.current),
-        );
+  const toggleMediaStream = (type, state) => {
+    userStream.current.getTracks().forEach((track) => {
+      if (track.kind === type) {
+        // eslint-disable-next-line no-param-reassign
+        track.enabled = !state;
+      }
+    });
+  };
+
+  const toggleMic = () => {
+    toggleMediaStream('audio', micActive);
+    setMicActive((prev) => !prev);
+  };
+
+  const toggleCamera = () => {
+    toggleMediaStream('video', cameraActive);
+    setCameraActive((prev) => !prev);
+  };
+
+  const leaveRoom = () => {
+    socketRef.current.emit('leave', roomName); // Let's the server know that user has left the room.
+
+    if (userVideo.current.srcObject) {
+      userVideo.current.srcObject.getTracks().forEach((track) => track.stop()); // Stops receiving all track of User.
     }
-  }
+    if (partnerVideo.current.srcObject) {
+      partnerVideo.current.srcObject
+        .getTracks()
+        .forEach((track) => track.stop()); // Stops receiving audio track of Peer.
+    }
+
+    // Checks if there is peer on the other side and safely closes the existing connection established with the peer.
+    if (rtcConnection.current) {
+      rtcConnection.current.ontrack = null;
+      rtcConnection.current.onicecandidate = null;
+      rtcConnection.current.close();
+      rtcConnection.current = null;
+    }
+  };
 
   return (
     <div>
       <video autoPlay ref={userVideo} />
       <video autoPlay ref={partnerVideo} />
-      <button type="button" onClick={shareMedia}>
-        Share Media
+      <button onClick={toggleMic} type="button">
+        {micActive ? 'Mute Mic' : 'UnMute Mic'}
+      </button>
+      <button onClick={leaveRoom} type="button">
+        Leave
+      </button>
+      <button onClick={toggleCamera} type="button">
+        {cameraActive ? 'Stop Camera' : 'Start Camera'}
       </button>
     </div>
   );
